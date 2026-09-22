@@ -1,0 +1,108 @@
+name: Build Lotfabadi APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6"
+
+      - name: Download stable app
+        run: |
+          mkdir -p app/src/main/assets
+          curl -L --fail \
+            https://raw.githubusercontent.com/alirezalotfabadi1/Lotfabadi__filter/main/index.html \
+            -o app/src/main/assets/index.html
+
+      - name: Patch Android backup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/src/main/assets/index.html")
+          text = path.read_text(encoding="utf-8")
+
+          new_function = r'''async function exportBackup(){
+            var data={
+              app:"مدیریت فیلتر لطف آبادی",
+              version:"standalone-1.0",
+              exported_at:new Date().toISOString(),
+              customers:await dbGetAll("customers"),
+              history:await dbGetAll("history")
+            };
+
+            var json=JSON.stringify(data,null,2);
+            var filename="lotfabadi-backup-"+todayJalali().replaceAll("/","-")+".json";
+
+            if(window.Android && typeof Android.saveBackup==="function"){
+              Android.saveBackup(json,filename);
+              return;
+            }
+
+            var blob=new Blob([json],{type:"application/json;charset=utf-8"});
+            var url=URL.createObjectURL(blob);
+            var a=document.createElement("a");
+            a.href=url;
+            a.download=filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            setTimeout(function(){
+              URL.revokeObjectURL(url);
+            },1000);
+
+            alert("بکاپ با موفقیت ساخته شد.");
+          }'''
+
+          pattern = r'async function exportBackup\(\)\{.*?\n\}\s*(?=async function importBackup)'
+          patched, count = re.subn(
+              pattern,
+              new_function + "\n",
+              text,
+              count=1,
+              flags=re.S
+          )
+
+          if count != 1:
+              raise SystemExit("exportBackup function not found")
+
+          path.write_text(patched, encoding="utf-8")
+          print("Android backup patch applied successfully.")
+          PY
+
+      - name: Build APK
+        run: |
+          gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lotfabadi-Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
